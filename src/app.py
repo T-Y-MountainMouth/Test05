@@ -5,14 +5,63 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import os
+import json
 from pathlib import Path
+from typing import Optional
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Pydantic models
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class LoginResponse(BaseModel):
+    success: bool
+    message: str
+    username: Optional[str] = None
+
+# Load teachers from JSON file
+def load_teachers():
+    teachers_file = Path(__file__).parent.parent / "teachers.json"
+    try:
+        with open(teachers_file, 'r') as f:
+            data = json.load(f)
+            return data.get("teachers", [])
+    except FileNotFoundError:
+        return []
+
+# Verify teacher authentication
+def verify_teacher(authorization: Optional[str] = Header(None)):
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    # Simple token validation (username:password)
+    try:
+        username, password = authorization.split(":")
+        teachers = load_teachers()
+        for teacher in teachers:
+            if teacher["username"] == username and teacher["password"] == password:
+                return username
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid authorization format")
 
 # Mount the static files directory
 current_dir = Path(__file__).parent
@@ -83,14 +132,31 @@ def root():
     return RedirectResponse(url="/static/index.html")
 
 
+@app.post("/auth/login")
+def login(request: LoginRequest):
+    """Authenticate a teacher"""
+    teachers = load_teachers()
+    for teacher in teachers:
+        if teacher["username"] == request.username and teacher["password"] == request.password:
+            return LoginResponse(
+                success=True,
+                message="Login successful",
+                username=request.username
+            )
+    return LoginResponse(
+        success=False,
+        message="Invalid username or password"
+    )
+
+
 @app.get("/activities")
 def get_activities():
     return activities
 
 
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
-    """Sign up a student for an activity"""
+def signup_for_activity(activity_name: str, email: str, teacher: str = Depends(verify_teacher)):
+    """Sign up a student for an activity (teachers only)"""
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -111,8 +177,8 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    """Unregister a student from an activity"""
+def unregister_from_activity(activity_name: str, email: str, teacher: str = Depends(verify_teacher)):
+    """Unregister a student from an activity (teachers only)"""
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
